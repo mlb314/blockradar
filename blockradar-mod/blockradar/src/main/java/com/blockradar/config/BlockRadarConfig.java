@@ -39,6 +39,13 @@ public class BlockRadarConfig {
 	// 20 ticks = 1 real second. Lower = more responsive, higher = cheaper.
 	public int rescanIntervalTicks = 10;
 
+	// If a received chat/system message CONTAINS this text (case-insensitive), it's treated
+	// as "you just connected to a (possibly different) server/world". The mod uses the FULL
+	// message text as a key: a never-seen key wipes the scan cache (everything is new again),
+	// a previously-seen key restores that server's cache (already-known chunks stay known).
+	// Leave blank to disable this behavior entirely.
+	public String serverChangeChatTrigger = "Sending to server";
+
 	// Of the chunk columns already scanned and cached, what % get re-checked on each scan
 	// cycle (in case blocks there were mined/placed). 100 = always re-scan everything (slow,
 	// old behavior). Low values (default 1) keep scanning cheap since newly-in-range chunks
