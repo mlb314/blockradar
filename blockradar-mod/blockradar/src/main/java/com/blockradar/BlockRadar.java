@@ -52,14 +52,14 @@ public class BlockRadar implements ClientModInitializer {
 			}
 		}
 
-		if (client.level == null || client.player == null) return;
+		if (client.level == null) return;
 
 		tickCounter++;
 		int interval = Math.max(1, CONFIG.rescanIntervalTicks);
 		if (tickCounter >= interval) {
 			tickCounter = 0;
 			ClientLevel level = client.level;
-			BoxRenderer.getInstance().rescan(level, client.player.position(), CONFIG);
+			BoxRenderer.getInstance().rescan(level, CONFIG);
 		}
 	}
 }
