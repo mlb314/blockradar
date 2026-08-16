@@ -2,14 +2,15 @@ package com.blockradar;
 
 import org.lwjgl.glfw.GLFW;
 
-import net.minecraft.client.KeyBinding;
-import net.minecraft.world.level.ClientLevel;
+import com.mojang.blaze3d.platform.InputConstants;
+
+import net.minecraft.client.KeyMapping;
+import net.minecraft.client.multiplayer.ClientLevel;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.util.InputUtil;
 import net.minecraft.resources.Identifier;
 
 import com.blockradar.config.BlockRadarConfig;
@@ -21,8 +22,9 @@ public class BlockRadar implements ClientModInitializer {
 
 	public static BlockRadarConfig CONFIG;
 
-	public static final KeyBinding.Category CATEGORY = KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
-	public static KeyBinding openMenuKey;
+	public static final KeyMapping.Category CATEGORY =
+			KeyMapping.Category.register(Identifier.fromNamespaceAndPath(MOD_ID, "main"));
+	public static KeyMapping openMenuKey;
 
 	private int tickCounter = 0;
 
@@ -30,13 +32,13 @@ public class BlockRadar implements ClientModInitializer {
 	public void onInitializeClient() {
 		CONFIG = BlockRadarConfig.load();
 
-		openMenuKey = new KeyBinding(
+		openMenuKey = new KeyMapping(
 				"key.blockradar.open_menu",
-				InputUtil.Type.KEYSYM,
+				InputConstants.Type.KEYSYM,
 				GLFW.GLFW_KEY_UNKNOWN, // unbound by default - set it in Controls once in-game
 				CATEGORY
 		);
-		KeyBindingHelper.registerKeyBinding(openMenuKey);
+		KeyMappingHelper.registerKeyMapping(openMenuKey);
 
 		BoxRenderer.init();
 
@@ -44,7 +46,7 @@ public class BlockRadar implements ClientModInitializer {
 	}
 
 	private void onClientTick(Minecraft client) {
-		while (openMenuKey.wasPressed()) {
+		while (openMenuKey.consumeClick()) {
 			if (client.screen == null) {
 				client.setScreen(new ConfigScreen(null));
 			}
