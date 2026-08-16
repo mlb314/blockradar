@@ -22,7 +22,7 @@ public class ConfigScreen extends Screen {
 	private final Screen parent;
 	private final BlockRadarConfig config = BlockRadar.CONFIG;
 
-	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yRadiusBox, intervalBox;
+	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yRadiusBox, intervalBox, rescanPercentBox;
 	private final List<Button> highlightRowButtons = new ArrayList<>();
 
 	private static final int LEFT = 20;
@@ -45,15 +45,17 @@ public class ConfigScreen extends Screen {
 
 		top += 24;
 		intervalBox = numberField(LEFT, top, config.rescanIntervalTicks);
+		rescanPercentBox = numberField(LEFT + 130, top, config.knownChunkRescanPercent);
 
+		top += 24;
 		this.addRenderableWidget(Checkbox.builder(Component.literal("Enabled"), this.font)
-				.pos(LEFT + 70, top)
+				.pos(LEFT, top)
 				.selected(config.enabled)
 				.onValueChange((cb, value) -> config.enabled = value)
 				.build());
 
 		this.addRenderableWidget(Checkbox.builder(Component.literal("See through walls"), this.font)
-				.pos(LEFT + 160, top)
+				.pos(LEFT + 90, top)
 				.selected(config.seeThroughWalls)
 				.onValueChange((cb, value) -> config.seeThroughWalls = value)
 				.build());
@@ -92,6 +94,7 @@ public class ConfigScreen extends Screen {
 		config.zMax = parseOr(zMaxBox, config.zMax);
 		config.yRadius = Math.max(0, parseOr(yRadiusBox, config.yRadius));
         config.rescanIntervalTicks = Math.max(1, parseOr(intervalBox, config.rescanIntervalTicks));
+        config.knownChunkRescanPercent = Math.max(0, Math.min(100, parseOr(rescanPercentBox, config.knownChunkRescanPercent)));
 	}
 
 	private static int parseOr(EditBox box, int fallback) {
@@ -108,8 +111,8 @@ public class ConfigScreen extends Screen {
 		}
 		highlightRowButtons.clear();
 
-		int rowY = 90;
-		int maxVisible = Math.max(1, (this.height - 130) / 24);
+		int rowY = 112;
+		int maxVisible = Math.max(1, (this.height - 150) / 24);
 
 		for (int i = 0; i < config.highlights.size() && i < maxVisible; i++) {
 			HighlightEntry entry = config.highlights.get(i);
@@ -144,11 +147,12 @@ public class ConfigScreen extends Screen {
 		graphics.text(this.font, "Z max", zMaxBox.getX(), 20, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Y radius", yRadiusBox.getX(), 20, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Rescan (ticks)", intervalBox.getX(), intervalBox.getY() - 10, 0xFFAAAAAA, false);
+		graphics.text(this.font, "Known-chunk rescan %", rescanPercentBox.getX(), rescanPercentBox.getY() - 10, 0xFFAAAAAA, false);
 
-		graphics.text(this.font, "Highlighted blocks:", LEFT, 78, 0xFFFFFFFF, false);
+		graphics.text(this.font, "Highlighted blocks:", LEFT, 100, 0xFFFFFFFF, false);
 
 		if (config.highlights.isEmpty()) {
-			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 92, 0xFF888888, false);
+			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 114, 0xFF888888, false);
 		}
 	}
 
