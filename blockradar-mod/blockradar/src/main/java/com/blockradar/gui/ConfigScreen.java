@@ -26,6 +26,7 @@ public class ConfigScreen extends Screen {
 	private final BlockRadarConfig config = BlockRadar.CONFIG;
 
 	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yMinBox, yMaxBox, intervalBox, rescanPercentBox;
+	private EditBox chatTriggerBox;
 	private final List<Button> highlightRowButtons = new ArrayList<>();
 
 	private static final int LEFT = 20;
@@ -65,6 +66,12 @@ public class ConfigScreen extends Screen {
 				.onValueChange((cb, value) -> config.seeThroughWalls = value)
 				.build());
 
+		top += 24;
+		chatTriggerBox = new EditBox(this.font, LEFT, top, 260, 20, Component.literal("Chat trigger"));
+		chatTriggerBox.setMaxLength(64);
+		chatTriggerBox.setValue(config.serverChangeChatTrigger == null ? "" : config.serverChangeChatTrigger);
+		this.addRenderableWidget(chatTriggerBox);
+
 		rebuildHighlightList();
 
 		int bottom = this.height - 28;
@@ -73,15 +80,20 @@ public class ConfigScreen extends Screen {
 			this.minecraft.setScreen(new EditHighlightScreen(this, null));
 		}).bounds(LEFT, bottom, 100, 20).build());
 
+		this.addRenderableWidget(Button.builder(Component.literal("Structures"), btn -> {
+			applyFields();
+			this.minecraft.setScreen(new StructuresScreen(this));
+		}).bounds(LEFT + 110, bottom, 90, 20).build());
+
 		this.addRenderableWidget(Button.builder(Component.literal("Save & Close"), btn -> {
 			applyFields();
 			config.save();
 			this.minecraft.setScreen(parent);
-		}).bounds(LEFT + 110, bottom, 100, 20).build());
+		}).bounds(LEFT + 210, bottom, 100, 20).build());
 
 		this.addRenderableWidget(Button.builder(Component.literal("Cancel"), btn ->
 				this.minecraft.setScreen(parent)
-		).bounds(LEFT + 220, bottom, 80, 20).build());
+		).bounds(LEFT + 320, bottom, 80, 20).build());
 	}
 
 	private EditBox numberField(int x, int y, int value) {
@@ -101,6 +113,7 @@ public class ConfigScreen extends Screen {
 		config.yMax = parseOr(yMaxBox, config.yMax);
 		config.rescanIntervalTicks = Math.max(1, parseOr(intervalBox, config.rescanIntervalTicks));
 		config.knownChunkRescanPercent = Math.max(0, Math.min(100, parseOr(rescanPercentBox, config.knownChunkRescanPercent)));
+		config.serverChangeChatTrigger = chatTriggerBox.getValue();
 	}
 
 	private static int parseOr(EditBox box, int fallback) {
@@ -117,8 +130,8 @@ public class ConfigScreen extends Screen {
 		}
 		highlightRowButtons.clear();
 
-		int rowY = 136;
-		int maxVisible = Math.max(1, (this.height - 174) / 24);
+		int rowY = 160;
+		int maxVisible = Math.max(1, (this.height - 198) / 24);
 
 		for (int i = 0; i < config.highlights.size() && i < maxVisible; i++) {
 			HighlightEntry entry = config.highlights.get(i);
@@ -155,11 +168,12 @@ public class ConfigScreen extends Screen {
 		graphics.text(this.font, "Y max", yMaxBox.getX(), yMaxBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Rescan (ticks)", intervalBox.getX(), intervalBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Known-chunk rescan %", rescanPercentBox.getX(), rescanPercentBox.getY() - 10, 0xFFAAAAAA, false);
+		graphics.text(this.font, "Chat msg = 'connected to server' (blank to disable)", chatTriggerBox.getX(), chatTriggerBox.getY() - 10, 0xFFAAAAAA, false);
 
-		graphics.text(this.font, "Highlighted blocks:", LEFT, 124, 0xFFFFFFFF, false);
+		graphics.text(this.font, "Highlighted blocks:", LEFT, 148, 0xFFFFFFFF, false);
 
 		if (config.highlights.isEmpty()) {
-			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 138, 0xFF888888, false);
+			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 162, 0xFF888888, false);
 		}
 	}
 
