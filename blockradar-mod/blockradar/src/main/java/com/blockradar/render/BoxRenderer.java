@@ -49,6 +49,9 @@ import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import com.blockradar.BlockRadar;
 import com.blockradar.config.BlockRadarConfig;
 import com.blockradar.config.HighlightEntry;
+import com.blockradar.structure.RelativeBlock;
+import com.blockradar.structure.StructureManager;
+import com.blockradar.structure.StructureTemplate;
 
 /**
  * Scans a fixed world-space box (set in the config, NOT relative to the player) on a timer,
@@ -87,11 +90,21 @@ public final class BoxRenderer {
 	private MappableRingBuffer vertexBuffer;
 	private final Random random = new Random();
 
-	// Per-chunk-column scan cache. Key is ChunkPos.asLong(chunkX, chunkZ).
-	private final Map<Long, List<HighlightedBox>> chunkCache = new HashMap<>();
-	// Signature of the settings the cache was built against (range + highlighted blocks).
-	// If this changes, the whole cache is invalidated since old results no longer apply.
+	// Per-chunk-column scan cache for the CURRENT server/world. Key is ChunkPos.pack(chunkX, chunkZ).
+	// Not final - swapped out wholesale by onServerChanged() when the active server changes.
+	private Map<Long, List<HighlightedBox>> chunkCache = new HashMap<>();
+	// Signature of the settings the current chunkCache was built against (range + highlighted
+	// blocks + enabled structure templates). If this changes, the cache is invalidated.
 	private int cachedSignature = 0;
+
+	// One saved cache per distinct chat-detected server "key" (see BlockRadar#serverChangeChatTrigger
+	// handling / onServerChanged below). Lets you hop between servers you've already scanned
+	// without losing that work, while a genuinely new server starts from a clean slate.
+	private final Map<String, ServerCache> perServerCache = new HashMap<>();
+	private String currentServerKey = null;
+
+	private record ServerCache(Map<Long, List<HighlightedBox>> chunks, int signature) {
+	}
 
 	// Filled in by the periodic scan (see BlockRadar's tick handler), read by extraction.
 	private volatile List<HighlightedBox> pendingBoxes = List.of();
@@ -101,7 +114,9 @@ public final class BoxRenderer {
 	private List<HighlightedBox> frameBoxes = List.of();
 	private boolean frameSeeThroughWalls = true;
 
-	private record HighlightedBox(int x, int y, int z, float r, float g, float b, float a) {
+	/** A highlighted region: a single block (sizeX=sizeY=sizeZ=1) or a structure's bounding box. */
+	private record HighlightedBox(int x, int y, int z, int sizeX, int sizeY, int sizeZ,
+			float r, float g, float b, float a) {
 	}
 
 	public static BoxRenderer getInstance() {
@@ -114,20 +129,46 @@ public final class BoxRenderer {
 		LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register(instance::renderAndDraw);
 	}
 
+	/**
+	 * Called from BlockRadar's chat listener when a message matching config.serverChangeChatTrigger
+	 * is received. rawMessage is the FULL trimmed chat line, used as-is as the cache key: a
+	 * server you haven't seen this key for before starts with a completely empty (all-new)
+	 * cache, while a repeat key restores whatever was cached for it before.
+	 */
+	public void onServerChanged(String rawMessage) {
+		if (rawMessage.equals(currentServerKey)) return; // same server message repeated - no-op
+
+		if (currentServerKey != null) {
+			perServerCache.put(currentServerKey, new ServerCache(chunkCache, cachedSignature));
+		}
+		currentServerKey = rawMessage;
+
+		ServerCache stored = perServerCache.get(rawMessage);
+		if (stored != null) {
+			chunkCache = stored.chunks();
+			cachedSignature = stored.signature();
+		} else {
+			chunkCache = new HashMap<>();
+			cachedSignature = 0;
+		}
+	}
+
 	/** Called from a client tick handler every rescanIntervalTicks - NOT every frame. */
 	public void rescan(ClientLevel level, BlockRadarConfig config) {
 		seeThroughWalls = config.seeThroughWalls;
 
-		if (!config.enabled || config.highlights.isEmpty()) {
+		List<StructureTemplate> structures = StructureManager.getEnabled();
+
+		if (!config.enabled || (config.highlights.isEmpty() && structures.isEmpty())) {
 			pendingBoxes = List.of();
 			chunkCache.clear();
 			return;
 		}
 
-		int signature = computeSignature(config);
+		int signature = computeSignature(config, structures);
 		if (signature != cachedSignature) {
-			// Range or highlighted-block settings changed since the cache was built - old
-			// per-chunk results no longer mean anything, so start over.
+			// Range, highlighted-block, or structure-template settings changed since the cache
+			// was built - old per-chunk results no longer mean anything, so start over.
 			chunkCache.clear();
 			cachedSignature = signature;
 		}
@@ -161,7 +202,7 @@ public final class BoxRenderer {
 				boolean shouldScan = !known || random.nextDouble() < rescanChance;
 
 				if (shouldScan) {
-					chunkCache.put(key, scanChunk(level, cx, cz, xMin, xMax, zMin, zMax, yMin, yMax, config.highlights));
+					chunkCache.put(key, scanChunk(level, cx, cz, xMin, xMax, zMin, zMax, yMin, yMax, config.highlights, structures));
 				}
 
 				combined.addAll(chunkCache.get(key));
@@ -176,7 +217,8 @@ public final class BoxRenderer {
 	}
 
 	private List<HighlightedBox> scanChunk(ClientLevel level, int chunkX, int chunkZ,
-			int xMin, int xMax, int zMin, int zMax, int yMin, int yMax, List<HighlightEntry> highlights) {
+			int xMin, int xMax, int zMin, int zMax, int yMin, int yMax,
+			List<HighlightEntry> highlights, List<StructureTemplate> structures) {
 		List<HighlightedBox> found = new ArrayList<>();
 
 		// Intersect this chunk's block range with the configured X/Z box, so partial chunks
@@ -205,8 +247,30 @@ public final class BoxRenderer {
 
 					for (HighlightEntry entry : highlights) {
 						if (entry.blockId.equalsIgnoreCase(id)) {
-							found.add(new HighlightedBox(x, y, z, entry.red(), entry.green(), entry.blue(), entry.alpha()));
+							found.add(new HighlightedBox(x, y, z, 1, 1, 1, entry.red(), entry.green(), entry.blue(), entry.alpha()));
 							break;
+						}
+					}
+
+					// Structure detection: this block is only a candidate "anchor" if it matches
+					// the FIRST block of a template - full verification only runs for that
+					// narrow subset, so this stays cheap even with several templates loaded.
+					for (StructureTemplate template : structures) {
+						RelativeBlock anchor = template.anchor();
+						if (!anchor.blockId.equalsIgnoreCase(id)) continue;
+
+						int originX = x - anchor.dx;
+						int originY = y - anchor.dy;
+						int originZ = z - anchor.dz;
+						double percent = matchPercent(level, originX, originY, originZ, template);
+
+						if (percent >= template.matchThresholdPercent) {
+							found.add(new HighlightedBox(
+									originX + template.minDx, originY + template.minDy, originZ + template.minDz,
+									template.maxDx - template.minDx + 1,
+									template.maxDy - template.minDy + 1,
+									template.maxDz - template.minDz + 1,
+									template.red(), template.green(), template.blue(), template.alpha()));
 						}
 					}
 				}
@@ -216,13 +280,35 @@ public final class BoxRenderer {
 		return found;
 	}
 
-	private static int computeSignature(BlockRadarConfig config) {
+	/** Percentage of a template's blocks that still match, ignoring positions in unloaded chunks. */
+	private double matchPercent(ClientLevel level, int originX, int originY, int originZ, StructureTemplate template) {
+		int attempted = 0;
+		int matched = 0;
+		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+
+		for (RelativeBlock rb : template.blocks) {
+			cursor.set(originX + rb.dx, originY + rb.dy, originZ + rb.dz);
+			if (!level.isLoaded(cursor)) continue;
+
+			attempted++;
+			BlockState state = level.getBlockState(cursor);
+			String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+			if (rb.blockId.equalsIgnoreCase(id)) matched++;
+		}
+
+		return attempted == 0 ? 0.0 : (matched * 100.0) / attempted;
+	}
+
+	private static int computeSignature(BlockRadarConfig config, List<StructureTemplate> structures) {
 		StringBuilder sb = new StringBuilder();
 		sb.append(config.xMin).append(',').append(config.xMax).append(',')
 				.append(config.zMin).append(',').append(config.zMax).append(',')
 				.append(config.yMin).append(',').append(config.yMax);
 		for (HighlightEntry entry : config.highlights) {
 			sb.append('|').append(entry.blockId).append(':').append(entry.color);
+		}
+		for (StructureTemplate template : structures) {
+			sb.append("|s:").append(template.name).append(':').append(template.matchThresholdPercent).append(':').append(template.color);
 		}
 		return sb.toString().hashCode();
 	}
@@ -258,7 +344,7 @@ public final class BoxRenderer {
 		for (HighlightedBox box : frameBoxes) {
 			renderFilledBox(pose, this.buffer,
 					box.x() - pad, box.y() - pad, box.z() - pad,
-					box.x() + 1 + pad, box.y() + 1 + pad, box.z() + 1 + pad,
+					box.x() + box.sizeX() + pad, box.y() + box.sizeY() + pad, box.z() + box.sizeZ() + pad,
 					box.r(), box.g(), box.b(), box.a());
 		}
 
