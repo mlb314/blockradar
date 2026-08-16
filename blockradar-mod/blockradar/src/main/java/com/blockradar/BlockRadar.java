@@ -97,20 +97,16 @@ public class BlockRadar implements ClientModInitializer {
 
 		while (selectCorner1Key.consumeClick()) {
 			selectedCorner1 = raycastBlockPos(client);
-			if (client.player != null) {
-				client.player.displayClientMessage(Component.literal(selectedCorner1 != null
-						? "Block Radar: corner 1 set to " + selectedCorner1.toShortString()
-						: "Block Radar: look at a block to set corner 1"), true);
-			}
+			client.gui.setOverlayMessage(Component.literal(selectedCorner1 != null
+					? "Block Radar: corner 1 set to " + selectedCorner1.toShortString()
+					: "Block Radar: look at a block to set corner 1"), false);
 		}
 
 		while (selectCorner2Key.consumeClick()) {
 			selectedCorner2 = raycastBlockPos(client);
-			if (client.player != null) {
-				client.player.displayClientMessage(Component.literal(selectedCorner2 != null
-						? "Block Radar: corner 2 set to " + selectedCorner2.toShortString()
-						: "Block Radar: look at a block to set corner 2"), true);
-			}
+			client.gui.setOverlayMessage(Component.literal(selectedCorner2 != null
+					? "Block Radar: corner 2 set to " + selectedCorner2.toShortString()
+					: "Block Radar: look at a block to set corner 2"), false);
 		}
 
 		if (client.level == null) return;
