@@ -151,7 +151,7 @@ public final class BoxRenderer {
 
 		for (int cx = chunkXMin; cx <= chunkXMax; cx++) {
 			for (int cz = chunkZMin; cz <= chunkZMax; cz++) {
-				long key = ChunkPos.asLong(cx, cz);
+				long key = ChunkPos.pack(cx, cz);
 				required.add(key);
 
 				boolean known = chunkCache.containsKey(key);
