@@ -15,18 +15,20 @@ import com.blockradar.config.BlockRadarConfig;
 import com.blockradar.config.HighlightEntry;
 
 /**
- * The "settings" menu for the mod. Bind a key to net.blockradar's keybinding
+ * The "settings" menu for the mod. Bind a key to blockradar's keybinding
  * (Controls > Key Binds > Block Radar) to open this in-game.
+ * <p>
+ * X/Z/Y min-max here are FIXED WORLD COORDINATES, not relative to the player - use F3 in-game
+ * to read your current coordinates when deciding what to type in.
  */
 public class ConfigScreen extends Screen {
 	private final Screen parent;
 	private final BlockRadarConfig config = BlockRadar.CONFIG;
 
-	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yRadiusBox, intervalBox, rescanPercentBox;
+	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yMinBox, yMaxBox, intervalBox, rescanPercentBox;
 	private final List<Button> highlightRowButtons = new ArrayList<>();
 
 	private static final int LEFT = 20;
-	private static final int FIELD_WIDTH = 50;
 
 	public ConfigScreen(Screen parent) {
 		super(Component.literal("Block Radar"));
@@ -41,7 +43,10 @@ public class ConfigScreen extends Screen {
 		xMaxBox = numberField(LEFT + 60, top, config.xMax);
 		zMinBox = numberField(LEFT + 140, top, config.zMin);
 		zMaxBox = numberField(LEFT + 200, top, config.zMax);
-		yRadiusBox = numberField(LEFT + 280, top, config.yRadius);
+
+		top += 24;
+		yMinBox = numberField(LEFT, top, config.yMin);
+		yMaxBox = numberField(LEFT + 60, top, config.yMax);
 
 		top += 24;
 		intervalBox = numberField(LEFT, top, config.rescanIntervalTicks);
@@ -92,9 +97,10 @@ public class ConfigScreen extends Screen {
 		config.xMax = parseOr(xMaxBox, config.xMax);
 		config.zMin = parseOr(zMinBox, config.zMin);
 		config.zMax = parseOr(zMaxBox, config.zMax);
-		config.yRadius = Math.max(0, parseOr(yRadiusBox, config.yRadius));
-        config.rescanIntervalTicks = Math.max(1, parseOr(intervalBox, config.rescanIntervalTicks));
-        config.knownChunkRescanPercent = Math.max(0, Math.min(100, parseOr(rescanPercentBox, config.knownChunkRescanPercent)));
+		config.yMin = parseOr(yMinBox, config.yMin);
+		config.yMax = parseOr(yMaxBox, config.yMax);
+		config.rescanIntervalTicks = Math.max(1, parseOr(intervalBox, config.rescanIntervalTicks));
+		config.knownChunkRescanPercent = Math.max(0, Math.min(100, parseOr(rescanPercentBox, config.knownChunkRescanPercent)));
 	}
 
 	private static int parseOr(EditBox box, int fallback) {
@@ -111,8 +117,8 @@ public class ConfigScreen extends Screen {
 		}
 		highlightRowButtons.clear();
 
-		int rowY = 112;
-		int maxVisible = Math.max(1, (this.height - 150) / 24);
+		int rowY = 136;
+		int maxVisible = Math.max(1, (this.height - 174) / 24);
 
 		for (int i = 0; i < config.highlights.size() && i < maxVisible; i++) {
 			HighlightEntry entry = config.highlights.get(i);
@@ -145,14 +151,15 @@ public class ConfigScreen extends Screen {
 		graphics.text(this.font, "X max", xMaxBox.getX(), 20, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Z min", zMinBox.getX(), 20, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Z max", zMaxBox.getX(), 20, 0xFFAAAAAA, false);
-		graphics.text(this.font, "Y radius", yRadiusBox.getX(), 20, 0xFFAAAAAA, false);
+		graphics.text(this.font, "Y min", yMinBox.getX(), yMinBox.getY() - 10, 0xFFAAAAAA, false);
+		graphics.text(this.font, "Y max", yMaxBox.getX(), yMaxBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Rescan (ticks)", intervalBox.getX(), intervalBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Known-chunk rescan %", rescanPercentBox.getX(), rescanPercentBox.getY() - 10, 0xFFAAAAAA, false);
 
-		graphics.text(this.font, "Highlighted blocks:", LEFT, 100, 0xFFFFFFFF, false);
+		graphics.text(this.font, "Highlighted blocks:", LEFT, 124, 0xFFFFFFFF, false);
 
 		if (config.highlights.isEmpty()) {
-			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 114, 0xFF888888, false);
+			graphics.text(this.font, "(none yet - click + Add Block)", LEFT, 138, 0xFF888888, false);
 		}
 	}
 
