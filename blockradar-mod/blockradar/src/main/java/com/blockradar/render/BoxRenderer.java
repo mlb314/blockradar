@@ -51,7 +51,8 @@ import com.blockradar.config.BlockRadarConfig;
 import com.blockradar.config.HighlightEntry;
 
 /**
- * Scans blocks around the player on a timer, then draws a translucent box over every match.
+ * Scans a fixed world-space box (set in the config, NOT relative to the player) on a timer,
+ * then draws a translucent box over every matching block found inside it.
  * <p>
  * Scanning is done per 16x16 chunk column (Minecraft's native grid), cached in {@link #chunkCache}.
  * A chunk that's newly in range is always scanned. A chunk that's already cached is only
@@ -114,7 +115,7 @@ public final class BoxRenderer {
 	}
 
 	/** Called from a client tick handler every rescanIntervalTicks - NOT every frame. */
-	public void rescan(ClientLevel level, Vec3 playerPos, BlockRadarConfig config) {
+	public void rescan(ClientLevel level, BlockRadarConfig config) {
 		seeThroughWalls = config.seeThroughWalls;
 
 		if (!config.enabled || config.highlights.isEmpty()) {
@@ -131,20 +132,17 @@ public final class BoxRenderer {
 			cachedSignature = signature;
 		}
 
-		int px = (int) Math.floor(playerPos.x);
-		int py = (int) Math.floor(playerPos.y);
-		int pz = (int) Math.floor(playerPos.z);
-
 		int xMin = Math.min(config.xMin, config.xMax);
 		int xMax = Math.max(config.xMin, config.xMax);
 		int zMin = Math.min(config.zMin, config.zMax);
 		int zMax = Math.max(config.zMin, config.zMax);
-		int yRadius = Math.max(0, config.yRadius);
+		int yMin = Math.min(config.yMin, config.yMax);
+		int yMax = Math.max(config.yMin, config.yMax);
 
-		int chunkXMin = Math.floorDiv(px + xMin, CHUNK_SIZE);
-		int chunkXMax = Math.floorDiv(px + xMax, CHUNK_SIZE);
-		int chunkZMin = Math.floorDiv(pz + zMin, CHUNK_SIZE);
-		int chunkZMax = Math.floorDiv(pz + zMax, CHUNK_SIZE);
+		int chunkXMin = Math.floorDiv(xMin, CHUNK_SIZE);
+		int chunkXMax = Math.floorDiv(xMax, CHUNK_SIZE);
+		int chunkZMin = Math.floorDiv(zMin, CHUNK_SIZE);
+		int chunkZMax = Math.floorDiv(zMax, CHUNK_SIZE);
 
 		double rescanChance = Math.max(0, Math.min(100, config.knownChunkRescanPercent)) / 100.0;
 
@@ -163,30 +161,30 @@ public final class BoxRenderer {
 				boolean shouldScan = !known || random.nextDouble() < rescanChance;
 
 				if (shouldScan) {
-					chunkCache.put(key, scanChunk(level, cx, cz, px, py, pz, xMin, xMax, zMin, zMax, yRadius, config.highlights));
+					chunkCache.put(key, scanChunk(level, cx, cz, xMin, xMax, zMin, zMax, yMin, yMax, config.highlights));
 				}
 
 				combined.addAll(chunkCache.get(key));
 			}
 		}
 
-		// Drop cached chunks that fell out of range - keeps memory bounded and means walking
-		// back into an area later is treated as "new" again.
+		// Drop cached chunks that fell out of the configured box - keeps memory bounded and
+		// means re-including an area later (by widening the range) counts as "new" again.
 		chunkCache.keySet().removeIf(key -> !required.contains(key));
 
 		pendingBoxes = combined;
 	}
 
-	private List<HighlightedBox> scanChunk(ClientLevel level, int chunkX, int chunkZ, int px, int py, int pz,
-			int xMin, int xMax, int zMin, int zMax, int yRadius, List<HighlightEntry> highlights) {
+	private List<HighlightedBox> scanChunk(ClientLevel level, int chunkX, int chunkZ,
+			int xMin, int xMax, int zMin, int zMax, int yMin, int yMax, List<HighlightEntry> highlights) {
 		List<HighlightedBox> found = new ArrayList<>();
 
-		// Intersect this chunk's block range with the configured X/Z bounding box, so partial
-		// chunks at the edge of the range don't scan blocks outside it.
-		int xStart = Math.max(chunkX * CHUNK_SIZE, px + xMin);
-		int xEnd = Math.min(chunkX * CHUNK_SIZE + CHUNK_SIZE - 1, px + xMax);
-		int zStart = Math.max(chunkZ * CHUNK_SIZE, pz + zMin);
-		int zEnd = Math.min(chunkZ * CHUNK_SIZE + CHUNK_SIZE - 1, pz + zMax);
+		// Intersect this chunk's block range with the configured X/Z box, so partial chunks
+		// at the edge of the range don't scan blocks outside it.
+		int xStart = Math.max(chunkX * CHUNK_SIZE, xMin);
+		int xEnd = Math.min(chunkX * CHUNK_SIZE + CHUNK_SIZE - 1, xMax);
+		int zStart = Math.max(chunkZ * CHUNK_SIZE, zMin);
+		int zEnd = Math.min(chunkZ * CHUNK_SIZE + CHUNK_SIZE - 1, zMax);
 
 		if (xStart > xEnd || zStart > zEnd) return found;
 
@@ -194,7 +192,7 @@ public final class BoxRenderer {
 
 		for (int x = xStart; x <= xEnd; x++) {
 			for (int z = zStart; z <= zEnd; z++) {
-				for (int y = py - yRadius; y <= py + yRadius; y++) {
+				for (int y = yMin; y <= yMax; y++) {
 					cursor.set(x, y, z);
 
 					if (!level.isLoaded(cursor)) continue;
@@ -221,7 +219,8 @@ public final class BoxRenderer {
 	private static int computeSignature(BlockRadarConfig config) {
 		StringBuilder sb = new StringBuilder();
 		sb.append(config.xMin).append(',').append(config.xMax).append(',')
-				.append(config.zMin).append(',').append(config.zMax).append(',').append(config.yRadius);
+				.append(config.zMin).append(',').append(config.zMax).append(',')
+				.append(config.yMin).append(',').append(config.yMax);
 		for (HighlightEntry entry : config.highlights) {
 			sb.append('|').append(entry.blockId).append(':').append(entry.color);
 		}
