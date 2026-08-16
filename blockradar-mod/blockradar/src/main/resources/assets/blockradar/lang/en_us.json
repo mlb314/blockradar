@@ -1,4 +1,6 @@
 {
   "key.blockradar.open_menu": "Open Block Radar Menu",
+  "key.blockradar.select_corner_1": "Select Structure Corner 1 (looks at crosshair block)",
+  "key.blockradar.select_corner_2": "Select Structure Corner 2 (looks at crosshair block)",
   "key.category.blockradar": "Block Radar"
 }
