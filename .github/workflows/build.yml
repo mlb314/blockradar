@@ -17,11 +17,13 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.1'
 
       - name: Build with Gradle
-        run: ./gradlew build --stacktrace
+        run: gradle build --stacktrace
 
       - name: Upload built mod jar
         uses: actions/upload-artifact@v4
