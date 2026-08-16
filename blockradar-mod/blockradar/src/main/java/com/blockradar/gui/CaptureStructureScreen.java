@@ -105,10 +105,8 @@ public class CaptureStructureScreen extends Screen {
 		BlockPos c2 = BlockRadar.selectedCorner2;
 
 		if (c1 == null || c2 == null || this.minecraft.level == null) {
-			if (this.minecraft.player != null) {
-				this.minecraft.player.displayClientMessage(Component.literal(
-						"Block Radar: select both corners first (look at a block, press the corner-1 and corner-2 keys)"), false);
-			}
+			this.minecraft.gui.setOverlayMessage(Component.literal(
+					"Block Radar: select both corners first (look at a block, press the corner-1 and corner-2 keys)"), false);
 			this.minecraft.setScreen(parent);
 			return;
 		}
@@ -137,10 +135,8 @@ public class CaptureStructureScreen extends Screen {
 		}
 
 		if (blocks.isEmpty()) {
-			if (this.minecraft.player != null) {
-				this.minecraft.player.displayClientMessage(Component.literal(
-						"Block Radar: no non-air blocks found in that selection"), false);
-			}
+			this.minecraft.gui.setOverlayMessage(Component.literal(
+					"Block Radar: no non-air blocks found in that selection"), false);
 			this.minecraft.setScreen(parent);
 			return;
 		}
@@ -156,7 +152,7 @@ public class CaptureStructureScreen extends Screen {
 		StructureManager.save(template);
 
 		if (this.minecraft.player != null) {
-			this.minecraft.player.displayClientMessage(Component.literal(
+			this.minecraft.gui.setOverlayMessage(Component.literal(
 					"Block Radar: captured '" + name + "' (" + blocks.size() + " blocks)"), false);
 		}
 
