@@ -15,10 +15,9 @@ import net.fabricmc.loader.api.FabricLoader;
 /**
  * Persisted, user-editable settings.
  * <p>
- * xMin/xMax and zMin/zMax are offsets FROM THE PLAYER, e.g. xMin=-16, xMax=16
- * scans 16 blocks to either side on X. yRadius does the same on the vertical axis
- * (not asked for explicitly, but needed since the world is 3D - highlighting only
- * matters for blocks you could actually reach/see).
+ * xMin/xMax, zMin/zMax and yMin/yMax are FIXED WORLD-SPACE BLOCK COORDINATES (not relative
+ * to the player) - only blocks inside this box are ever scanned or highlighted, no matter
+ * where you're standing. Set these to bound a build site, a mining area, etc.
  */
 public class BlockRadarConfig {
 	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -27,11 +26,14 @@ public class BlockRadarConfig {
 	public boolean enabled = true;
 	public boolean seeThroughWalls = true;
 
-	public int xMin = -16;
-	public int xMax = 16;
-	public int zMin = -16;
-	public int zMax = 16;
-	public int yRadius = 16;
+	// Fixed world-space block coordinates (NOT relative to the player) - only blocks inside
+	// this box are ever scanned, regardless of where you're standing.
+	public int xMin = -100;
+	public int xMax = 100;
+	public int zMin = -100;
+	public int zMax = 100;
+	public int yMin = -64;
+	public int yMax = 100;
 
 	// How often (in client ticks) the world is re-scanned for matching blocks.
 	// 20 ticks = 1 real second. Lower = more responsive, higher = cheaper.
