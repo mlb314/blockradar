@@ -1,10 +1,15 @@
 package com.blockradar.render;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
+import java.util.Random;
+import java.util.Set;
 
 import org.lwjgl.system.MemoryUtil;
 
@@ -29,8 +34,10 @@ import net.minecraft.client.renderer.MappableRingBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
@@ -46,7 +53,14 @@ import com.blockradar.config.HighlightEntry;
 /**
  * Scans blocks around the player on a timer, then draws a translucent box over every match.
  * <p>
- * This is adapted directly from the "Rendering in the World" guide for 26.1.2
+ * Scanning is done per 16x16 chunk column (Minecraft's native grid), cached in {@link #chunkCache}.
+ * A chunk that's newly in range is always scanned. A chunk that's already cached is only
+ * re-scanned with probability {@code config.knownChunkRescanPercent}/100 each cycle - this is
+ * what keeps repeated scans cheap while still eventually noticing blocks that changed
+ * (mined/placed) in already-explored areas. Chunks that leave the configured range are evicted,
+ * so walking back into them later counts as "new" again.
+ * <p>
+ * The GPU drawing part is adapted directly from the "Rendering in the World" guide for 26.1.2
  * (docs.fabricmc.net/26.1.2/develop/rendering/world) - a custom RenderPipeline based on
  * DEBUG_FILLED_SNIPPET with depth testing removed, so highlights are visible through walls
  * (handy for spotting ores/blocks behind terrain). Set "seeThroughWalls": false in the config
@@ -66,9 +80,17 @@ public final class BoxRenderer {
 	private static final Vector4f COLOR_MODULATOR = new Vector4f(1f, 1f, 1f, 1f);
 	private static final Vector3f MODEL_OFFSET = new Vector3f();
 	private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
+	private static final int CHUNK_SIZE = 16;
 
 	private BufferBuilder buffer;
 	private MappableRingBuffer vertexBuffer;
+	private final Random random = new Random();
+
+	// Per-chunk-column scan cache. Key is ChunkPos.asLong(chunkX, chunkZ).
+	private final Map<Long, List<HighlightedBox>> chunkCache = new HashMap<>();
+	// Signature of the settings the cache was built against (range + highlighted blocks).
+	// If this changes, the whole cache is invalidated since old results no longer apply.
+	private int cachedSignature = 0;
 
 	// Filled in by the periodic scan (see BlockRadar's tick handler), read by extraction.
 	private volatile List<HighlightedBox> pendingBoxes = List.of();
@@ -97,10 +119,18 @@ public final class BoxRenderer {
 
 		if (!config.enabled || config.highlights.isEmpty()) {
 			pendingBoxes = List.of();
+			chunkCache.clear();
 			return;
 		}
 
-		List<HighlightedBox> found = new ArrayList<>();
+		int signature = computeSignature(config);
+		if (signature != cachedSignature) {
+			// Range or highlighted-block settings changed since the cache was built - old
+			// per-chunk results no longer mean anything, so start over.
+			chunkCache.clear();
+			cachedSignature = signature;
+		}
+
 		int px = (int) Math.floor(playerPos.x);
 		int py = (int) Math.floor(playerPos.y);
 		int pz = (int) Math.floor(playerPos.z);
@@ -111,14 +141,60 @@ public final class BoxRenderer {
 		int zMax = Math.max(config.zMin, config.zMax);
 		int yRadius = Math.max(0, config.yRadius);
 
+		int chunkXMin = Math.floorDiv(px + xMin, CHUNK_SIZE);
+		int chunkXMax = Math.floorDiv(px + xMax, CHUNK_SIZE);
+		int chunkZMin = Math.floorDiv(pz + zMin, CHUNK_SIZE);
+		int chunkZMax = Math.floorDiv(pz + zMax, CHUNK_SIZE);
+
+		double rescanChance = Math.max(0, Math.min(100, config.knownChunkRescanPercent)) / 100.0;
+
+		Set<Long> required = new HashSet<>();
+		List<HighlightedBox> combined = new ArrayList<>();
+
+		for (int cx = chunkXMin; cx <= chunkXMax; cx++) {
+			for (int cz = chunkZMin; cz <= chunkZMax; cz++) {
+				long key = ChunkPos.asLong(cx, cz);
+				required.add(key);
+
+				boolean known = chunkCache.containsKey(key);
+				// New chunks: always scan. Known chunks: only re-scan knownChunkRescanPercent%
+				// of the time, so blocks mined/placed there eventually get noticed without
+				// paying the full scan cost every cycle.
+				boolean shouldScan = !known || random.nextDouble() < rescanChance;
+
+				if (shouldScan) {
+					chunkCache.put(key, scanChunk(level, cx, cz, px, py, pz, xMin, xMax, zMin, zMax, yRadius, config.highlights));
+				}
+
+				combined.addAll(chunkCache.get(key));
+			}
+		}
+
+		// Drop cached chunks that fell out of range - keeps memory bounded and means walking
+		// back into an area later is treated as "new" again.
+		chunkCache.keySet().removeIf(key -> !required.contains(key));
+
+		pendingBoxes = combined;
+	}
+
+	private List<HighlightedBox> scanChunk(ClientLevel level, int chunkX, int chunkZ, int px, int py, int pz,
+			int xMin, int xMax, int zMin, int zMax, int yRadius, List<HighlightEntry> highlights) {
+		List<HighlightedBox> found = new ArrayList<>();
+
+		// Intersect this chunk's block range with the configured X/Z bounding box, so partial
+		// chunks at the edge of the range don't scan blocks outside it.
+		int xStart = Math.max(chunkX * CHUNK_SIZE, px + xMin);
+		int xEnd = Math.min(chunkX * CHUNK_SIZE + CHUNK_SIZE - 1, px + xMax);
+		int zStart = Math.max(chunkZ * CHUNK_SIZE, pz + zMin);
+		int zEnd = Math.min(chunkZ * CHUNK_SIZE + CHUNK_SIZE - 1, pz + zMax);
+
+		if (xStart > xEnd || zStart > zEnd) return found;
+
 		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
-		for (int dx = xMin; dx <= xMax; dx++) {
-			for (int dz = zMin; dz <= zMax; dz++) {
-				for (int dy = -yRadius; dy <= yRadius; dy++) {
-					int x = px + dx;
-					int y = py + dy;
-					int z = pz + dz;
+		for (int x = xStart; x <= xEnd; x++) {
+			for (int z = zStart; z <= zEnd; z++) {
+				for (int y = py - yRadius; y <= py + yRadius; y++) {
 					cursor.set(x, y, z);
 
 					if (!level.isLoaded(cursor)) continue;
@@ -127,9 +203,9 @@ public final class BoxRenderer {
 					if (state.isAir()) continue;
 
 					Block block = state.getBlock();
-					String id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(block).toString();
+					String id = BuiltInRegistries.BLOCK.getKey(block).toString();
 
-					for (HighlightEntry entry : config.highlights) {
+					for (HighlightEntry entry : highlights) {
 						if (entry.blockId.equalsIgnoreCase(id)) {
 							found.add(new HighlightedBox(x, y, z, entry.red(), entry.green(), entry.blue(), entry.alpha()));
 							break;
@@ -139,7 +215,17 @@ public final class BoxRenderer {
 			}
 		}
 
-		pendingBoxes = found;
+		return found;
+	}
+
+	private static int computeSignature(BlockRadarConfig config) {
+		StringBuilder sb = new StringBuilder();
+		sb.append(config.xMin).append(',').append(config.xMax).append(',')
+				.append(config.zMin).append(',').append(config.zMax).append(',').append(config.yRadius);
+		for (HighlightEntry entry : config.highlights) {
+			sb.append('|').append(entry.blockId).append(':').append(entry.color);
+		}
+		return sb.toString().hashCode();
 	}
 
 	private void extract(LevelExtractionContext context) {
