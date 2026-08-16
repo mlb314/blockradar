@@ -37,6 +37,12 @@ public class BlockRadarConfig {
 	// 20 ticks = 1 real second. Lower = more responsive, higher = cheaper.
 	public int rescanIntervalTicks = 10;
 
+	// Of the chunk columns already scanned and cached, what % get re-checked on each scan
+	// cycle (in case blocks there were mined/placed). 100 = always re-scan everything (slow,
+	// old behavior). Low values (default 1) keep scanning cheap since newly-in-range chunks
+	// are always scanned regardless of this setting.
+	public int knownChunkRescanPercent = 1;
+
 	public List<HighlightEntry> highlights = new ArrayList<>();
 
 	public static BlockRadarConfig load() {
