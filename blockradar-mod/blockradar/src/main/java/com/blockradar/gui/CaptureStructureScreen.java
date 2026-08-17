@@ -19,11 +19,15 @@ import com.blockradar.structure.StructureManager;
 import com.blockradar.structure.StructureTemplate;
 
 /**
- * Reads BlockRadar.selectedCorner1/2 (set via the two "select corner" keybindings while looking
- * at blocks in-game) and, on Save, records every non-air block in that box as a template.
+ * Captures a new structure from BlockRadar.selectedCorner1/2 (set via the two "select corner"
+ * keybindings while looking at blocks in-game), OR edits an existing template's name/threshold/
+ * color. Pass an existing StructureTemplate to edit it - if corners are ALSO currently selected
+ * when you hit Save, the block list is re-captured from that selection too; otherwise the
+ * existing captured blocks are kept as-is and only the metadata changes.
  */
 public class CaptureStructureScreen extends Screen {
 	private final Screen parent;
+	private final StructureTemplate editing; // null when capturing a brand new structure
 
 	private EditBox nameBox;
 	private EditBox thresholdBox;
@@ -34,8 +38,16 @@ public class CaptureStructureScreen extends Screen {
 	private boolean syncing = false;
 
 	public CaptureStructureScreen(Screen parent) {
-		super(Component.literal("Capture Structure"));
+		this(parent, null);
+	}
+
+	public CaptureStructureScreen(Screen parent, StructureTemplate editing) {
+		super(Component.literal(editing == null ? "Capture Structure" : "Edit Structure"));
 		this.parent = parent;
+		this.editing = editing;
+		if (editing != null) {
+			this.color = editing.color;
+		}
 	}
 
 	@Override
@@ -45,13 +57,13 @@ public class CaptureStructureScreen extends Screen {
 
 		nameBox = new EditBox(this.font, left, top, 200, 20, Component.literal("Name"));
 		nameBox.setMaxLength(48);
-		nameBox.setValue("my_structure");
+		nameBox.setValue(editing != null ? editing.name : "my_structure");
 		this.addRenderableWidget(nameBox);
 
 		top += 30;
 		thresholdBox = new EditBox(this.font, left, top, 60, 20, Component.literal("Threshold"));
 		thresholdBox.setMaxLength(3);
-		thresholdBox.setValue("100");
+		thresholdBox.setValue(Integer.toString(editing != null ? editing.matchThresholdPercent : 100));
 		this.addRenderableWidget(thresholdBox);
 
 		top += 30;
@@ -75,7 +87,7 @@ public class CaptureStructureScreen extends Screen {
 		this.addRenderableWidget(aSlider);
 
 		int bottom = this.height - 28;
-		this.addRenderableWidget(Button.builder(Component.literal("Capture"), btn -> capture())
+		this.addRenderableWidget(Button.builder(Component.literal(editing == null ? "Capture" : "Save"), btn -> capture())
 				.bounds(left, bottom, 100, 20).build());
 		this.addRenderableWidget(Button.builder(Component.literal("Cancel"), btn -> this.minecraft.setScreen(parent))
 				.bounds(left + 110, bottom, 90, 20).build());
@@ -103,14 +115,51 @@ public class CaptureStructureScreen extends Screen {
 	private void capture() {
 		BlockPos c1 = BlockRadar.selectedCorner1;
 		BlockPos c2 = BlockRadar.selectedCorner2;
+		boolean cornersSelected = c1 != null && c2 != null && this.minecraft.level != null;
 
-		if (c1 == null || c2 == null || this.minecraft.level == null) {
+		List<RelativeBlock> blocks;
+
+		if (cornersSelected) {
+			blocks = captureBlocksFromSelection(c1, c2);
+			if (blocks.isEmpty()) {
+				this.minecraft.gui.setOverlayMessage(Component.literal(
+						"Block Radar: no non-air blocks found in that selection"), false);
+				this.minecraft.setScreen(parent);
+				return;
+			}
+		} else if (editing != null) {
+			// No new selection made - keep the structure's existing captured blocks and only
+			// change name/threshold/color.
+			blocks = editing.blocks;
+		} else {
 			this.minecraft.gui.setOverlayMessage(Component.literal(
 					"Block Radar: select both corners first (look at a block, press the corner-1 and corner-2 keys)"), false);
 			this.minecraft.setScreen(parent);
 			return;
 		}
 
+		// Anchor (blocks.get(0)) should ideally be a distinctive/uncommon block so the scanner's
+		// anchor-filter stays cheap - if the first captured block happens to be something very
+		// common (stone, dirt), consider re-ordering the saved JSON by hand afterward.
+		String name = nameBox.getValue().trim().isEmpty() ? "structure" : nameBox.getValue().trim();
+		int threshold = Math.max(1, Math.min(100, parseOr(thresholdBox, 100)));
+
+		if (editing != null && !editing.name.equals(name)) {
+			// Renaming saves under a new file - remove the old one so it isn't left behind.
+			StructureManager.delete(editing);
+		}
+
+		StructureTemplate template = new StructureTemplate(name, blocks, threshold, color);
+		template.enabled = editing == null || editing.enabled;
+		StructureManager.save(template);
+
+		this.minecraft.gui.setOverlayMessage(Component.literal(
+				(editing == null ? "Block Radar: captured '" : "Block Radar: updated '") + name + "' (" + blocks.size() + " blocks)"), false);
+
+		this.minecraft.setScreen(parent);
+	}
+
+	private List<RelativeBlock> captureBlocksFromSelection(BlockPos c1, BlockPos c2) {
 		int minX = Math.min(c1.getX(), c2.getX());
 		int maxX = Math.max(c1.getX(), c2.getX());
 		int minY = Math.min(c1.getY(), c2.getY());
@@ -134,29 +183,7 @@ public class CaptureStructureScreen extends Screen {
 			}
 		}
 
-		if (blocks.isEmpty()) {
-			this.minecraft.gui.setOverlayMessage(Component.literal(
-					"Block Radar: no non-air blocks found in that selection"), false);
-			this.minecraft.setScreen(parent);
-			return;
-		}
-
-		// Anchor (blocks.get(0)) should ideally be a distinctive/uncommon block so the scanner's
-		// anchor-filter stays cheap - if the first captured block happens to be something very
-		// common (stone, dirt), consider re-ordering the saved JSON by hand afterward.
-		String name = nameBox.getValue().trim().isEmpty() ? "structure" : nameBox.getValue().trim();
-		int threshold = parseOr(thresholdBox, 100);
-		threshold = Math.max(1, Math.min(100, threshold));
-
-		StructureTemplate template = new StructureTemplate(name, blocks, threshold, color);
-		StructureManager.save(template);
-
-		if (this.minecraft.player != null) {
-			this.minecraft.gui.setOverlayMessage(Component.literal(
-					"Block Radar: captured '" + name + "' (" + blocks.size() + " blocks)"), false);
-		}
-
-		this.minecraft.setScreen(parent);
+		return blocks;
 	}
 
 	private static int parseOr(EditBox box, int fallback) {
@@ -182,9 +209,15 @@ public class CaptureStructureScreen extends Screen {
 		graphics.fill(swatchX, swatchY, swatchX + 40, swatchY + 20, 0xFF000000 | (color & 0x00FFFFFF));
 		graphics.fill(swatchX + 2, swatchY + 2, swatchX + 38, swatchY + 18, color);
 
-		String status = (BlockRadar.selectedCorner1 == null || BlockRadar.selectedCorner2 == null)
-				? "Corners not fully selected yet - look at blocks and use the corner keybinds"
-				: "Corners: " + BlockRadar.selectedCorner1.toShortString() + " to " + BlockRadar.selectedCorner2.toShortString();
+		String status;
+		if (BlockRadar.selectedCorner1 == null || BlockRadar.selectedCorner2 == null) {
+			status = editing == null
+					? "Corners not fully selected yet - look at blocks and use the corner keybinds"
+					: "No new selection - Save will keep the existing " + editing.blocks.size() + " captured blocks";
+		} else {
+			status = "Corners: " + BlockRadar.selectedCorner1.toShortString() + " to " + BlockRadar.selectedCorner2.toShortString()
+					+ (editing != null ? " (Save will RE-CAPTURE from this selection)" : "");
+		}
 		graphics.text(this.font, status, 20, this.height - 46, 0xFFAAAAAA, false);
 	}
 
