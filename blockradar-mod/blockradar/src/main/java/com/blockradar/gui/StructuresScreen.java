@@ -63,14 +63,20 @@ public class StructuresScreen extends Screen {
 					})
 					.build();
 
+			Button edit = Button.builder(Component.literal("Edit"), btn ->
+					this.minecraft.setScreen(new CaptureStructureScreen(this, template))
+			).bounds(LEFT + 250, y, 60, 20).build();
+
 			Button delete = Button.builder(Component.literal("Delete"), btn -> {
 				StructureManager.delete(template);
 				rebuildList();
-			}).bounds(LEFT + 250, y, 60, 20).build();
+			}).bounds(LEFT + 315, y, 60, 20).build();
 
 			this.addRenderableWidget(toggle);
+			this.addRenderableWidget(edit);
 			this.addRenderableWidget(delete);
 			rowWidgets.add(toggle);
+			rowWidgets.add(edit);
 			rowWidgets.add(delete);
 		}
 	}
