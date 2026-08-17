@@ -8,7 +8,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
-import java.util.Random;
 import java.util.Set;
 
 import org.lwjgl.system.MemoryUtil;
@@ -29,7 +28,9 @@ import org.joml.Matrix4fc;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
 
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.renderer.MappableRingBuffer;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderType;
@@ -37,6 +38,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -45,6 +47,7 @@ import net.minecraft.world.phys.Vec3;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelExtractionContext;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 
 import com.blockradar.BlockRadar;
 import com.blockradar.config.BlockRadarConfig;
@@ -55,14 +58,15 @@ import com.blockradar.structure.StructureTemplate;
 
 /**
  * Scans a fixed world-space box (set in the config, NOT relative to the player) on a timer,
- * then draws a translucent box over every matching block found inside it.
+ * then draws a translucent box over every matching block found inside it, plus a floating
+ * "name (distance)" waypoint label for each structure match.
  * <p>
  * Scanning is done per 16x16 chunk column (Minecraft's native grid), cached in {@link #chunkCache}.
- * A chunk that's newly in range is always scanned. A chunk that's already cached is only
- * re-scanned with probability {@code config.knownChunkRescanPercent}/100 each cycle - this is
- * what keeps repeated scans cheap while still eventually noticing blocks that changed
- * (mined/placed) in already-explored areas. Chunks that leave the configured range are evicted,
- * so walking back into them later counts as "new" again.
+ * A chunk is scanned AT MOST ONCE per server: once it's in the cache it is never re-scanned
+ * automatically (no periodic re-checking, even at a small chance) - only genuinely new chunks
+ * entering the configured range get scanned. This means the mod won't notice if a highlighted
+ * block gets mined/placed in an already-scanned chunk; that trade-off is intentional, to keep
+ * scanning cost as low as possible.
  * <p>
  * The GPU drawing part is adapted directly from the "Rendering in the World" guide for 26.1.2
  * (docs.fabricmc.net/26.1.2/develop/rendering/world) - a custom RenderPipeline based on
@@ -85,10 +89,10 @@ public final class BoxRenderer {
 	private static final Vector3f MODEL_OFFSET = new Vector3f();
 	private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
 	private static final int CHUNK_SIZE = 16;
+	private static final int[] ROTATIONS = {0, 90, 180, 270};
 
 	private BufferBuilder buffer;
 	private MappableRingBuffer vertexBuffer;
-	private final Random random = new Random();
 
 	// Per-chunk-column scan cache for the CURRENT server/world. Key is ChunkPos.pack(chunkX, chunkZ).
 	// Not final - swapped out wholesale by onServerChanged() when the active server changes.
@@ -114,9 +118,20 @@ public final class BoxRenderer {
 	private List<HighlightedBox> frameBoxes = List.of();
 	private boolean frameSeeThroughWalls = true;
 
-	/** A highlighted region: a single block (sizeX=sizeY=sizeZ=1) or a structure's bounding box. */
+	// Combined view*projection matrix from the most recent world-render frame, used to project
+	// waypoint world positions onto the 2D HUD. Updated every frame regardless of whether there
+	// are any boxes to draw, so waypoints stay accurate even with box rendering skipped.
+	private final Matrix4f frameViewProj = new Matrix4f();
+	private boolean frameViewProjValid = false;
+
+	/** A highlighted region: a single block (sizeX=sizeY=sizeZ=1) or a structure's bounding box.
+	 *  label is null for plain block highlights, and the template name for structure matches -
+	 *  only labeled boxes get a waypoint drawn on the HUD. */
 	private record HighlightedBox(int x, int y, int z, int sizeX, int sizeY, int sizeZ,
-			float r, float g, float b, float a) {
+			float r, float g, float b, float a, String label) {
+		double centerX() { return x + sizeX / 2.0; }
+		double centerY() { return y + sizeY / 2.0; }
+		double centerZ() { return z + sizeZ / 2.0; }
 	}
 
 	public static BoxRenderer getInstance() {
@@ -127,6 +142,7 @@ public final class BoxRenderer {
 		instance = new BoxRenderer();
 		LevelRenderEvents.END_EXTRACTION.register(instance::extract);
 		LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register(instance::renderAndDraw);
+		HudElementRegistry.addLast(Identifier.fromNamespaceAndPath(BlockRadar.MOD_ID, "waypoints"), instance::renderWaypoints);
 	}
 
 	/**
@@ -185,8 +201,6 @@ public final class BoxRenderer {
 		int chunkZMin = Math.floorDiv(zMin, CHUNK_SIZE);
 		int chunkZMax = Math.floorDiv(zMax, CHUNK_SIZE);
 
-		double rescanChance = Math.max(0, Math.min(100, config.knownChunkRescanPercent)) / 100.0;
-
 		Set<Long> required = new HashSet<>();
 		List<HighlightedBox> combined = new ArrayList<>();
 
@@ -195,13 +209,10 @@ public final class BoxRenderer {
 				long key = ChunkPos.pack(cx, cz);
 				required.add(key);
 
-				boolean known = chunkCache.containsKey(key);
-				// New chunks: always scan. Known chunks: only re-scan knownChunkRescanPercent%
-				// of the time, so blocks mined/placed there eventually get noticed without
-				// paying the full scan cost every cycle.
-				boolean shouldScan = !known || random.nextDouble() < rescanChance;
-
-				if (shouldScan) {
+				// Only ever scan a chunk the FIRST time it's seen. No periodic re-checking -
+				// once cached, a chunk is trusted until it leaves the range or the settings
+				// change (which clears the whole cache above).
+				if (!chunkCache.containsKey(key)) {
 					chunkCache.put(key, scanChunk(level, cx, cz, xMin, xMax, zMin, zMax, yMin, yMax, config.highlights, structures));
 				}
 
@@ -247,7 +258,7 @@ public final class BoxRenderer {
 
 					for (HighlightEntry entry : highlights) {
 						if (entry.blockId.equalsIgnoreCase(id)) {
-							found.add(new HighlightedBox(x, y, z, 1, 1, 1, entry.red(), entry.green(), entry.blue(), entry.alpha()));
+							found.add(new HighlightedBox(x, y, z, 1, 1, 1, entry.red(), entry.green(), entry.blue(), entry.alpha(), null));
 							break;
 						}
 					}
@@ -255,22 +266,33 @@ public final class BoxRenderer {
 					// Structure detection: this block is only a candidate "anchor" if it matches
 					// the FIRST block of a template - full verification only runs for that
 					// narrow subset, so this stays cheap even with several templates loaded.
+					// Every horizontal (Y-axis) rotation is tried, since a monument can be facing
+					// any of the 4 cardinal directions; block TYPE matching is direction-agnostic
+					// already (we compare block id only, not facing/state), so no per-block
+					// rotation logic beyond repositioning is needed.
 					for (StructureTemplate template : structures) {
 						RelativeBlock anchor = template.anchor();
 						if (!anchor.blockId.equalsIgnoreCase(id)) continue;
 
-						int originX = x - anchor.dx;
-						int originY = y - anchor.dy;
-						int originZ = z - anchor.dz;
-						double percent = matchPercent(level, originX, originY, originZ, template);
+						for (int rotation : ROTATIONS) {
+							int adx = rotateDx(anchor.dx, anchor.dz, rotation);
+							int adz = rotateDz(anchor.dx, anchor.dz, rotation);
+							int originX = x - adx;
+							int originY = y - anchor.dy;
+							int originZ = z - adz;
 
-						if (percent >= template.matchThresholdPercent) {
-							found.add(new HighlightedBox(
-									originX + template.minDx, originY + template.minDy, originZ + template.minDz,
-									template.maxDx - template.minDx + 1,
-									template.maxDy - template.minDy + 1,
-									template.maxDz - template.minDz + 1,
-									template.red(), template.green(), template.blue(), template.alpha()));
+							double percent = matchPercent(level, originX, originY, originZ, template, rotation);
+							if (percent >= template.matchThresholdPercent) {
+								int[] bounds = rotatedBounds(template, rotation);
+								found.add(new HighlightedBox(
+										originX + bounds[0], originY + template.minDy, originZ + bounds[2],
+										bounds[1] - bounds[0] + 1,
+										template.maxDy - template.minDy + 1,
+										bounds[3] - bounds[2] + 1,
+										template.red(), template.green(), template.blue(), template.alpha(),
+										template.name));
+								break; // don't test further rotations once one matches at this anchor
+							}
 						}
 					}
 				}
@@ -281,13 +303,15 @@ public final class BoxRenderer {
 	}
 
 	/** Percentage of a template's blocks that still match, ignoring positions in unloaded chunks. */
-	private double matchPercent(ClientLevel level, int originX, int originY, int originZ, StructureTemplate template) {
+	private double matchPercent(ClientLevel level, int originX, int originY, int originZ, StructureTemplate template, int rotation) {
 		int attempted = 0;
 		int matched = 0;
 		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
 		for (RelativeBlock rb : template.blocks) {
-			cursor.set(originX + rb.dx, originY + rb.dy, originZ + rb.dz);
+			int rdx = rotateDx(rb.dx, rb.dz, rotation);
+			int rdz = rotateDz(rb.dx, rb.dz, rotation);
+			cursor.set(originX + rdx, originY + rb.dy, originZ + rdz);
 			if (!level.isLoaded(cursor)) continue;
 
 			attempted++;
@@ -297,6 +321,45 @@ public final class BoxRenderer {
 		}
 
 		return attempted == 0 ? 0.0 : (matched * 100.0) / attempted;
+	}
+
+	/** Rotates a relative (dx, dz) offset around the Y axis by 0/90/180/270 degrees. */
+	private static int rotateDx(int dx, int dz, int rotationDegrees) {
+		return switch (rotationDegrees) {
+			case 90 -> -dz;
+			case 180 -> -dx;
+			case 270 -> dz;
+			default -> dx;
+		};
+	}
+
+	private static int rotateDz(int dx, int dz, int rotationDegrees) {
+		return switch (rotationDegrees) {
+			case 90 -> dx;
+			case 180 -> -dz;
+			case 270 -> -dx;
+			default -> dz;
+		};
+	}
+
+	/** Bounding box (in rotated dx/dz space) of a template after applying the given rotation. */
+	private static int[] rotatedBounds(StructureTemplate template, int rotationDegrees) {
+		int[] cornersDx = {template.minDx, template.minDx, template.maxDx, template.maxDx};
+		int[] cornersDz = {template.minDz, template.maxDz, template.minDz, template.maxDz};
+
+		int minRDx = Integer.MAX_VALUE, maxRDx = Integer.MIN_VALUE;
+		int minRDz = Integer.MAX_VALUE, maxRDz = Integer.MIN_VALUE;
+
+		for (int i = 0; i < 4; i++) {
+			int rdx = rotateDx(cornersDx[i], cornersDz[i], rotationDegrees);
+			int rdz = rotateDz(cornersDx[i], cornersDz[i], rotationDegrees);
+			minRDx = Math.min(minRDx, rdx);
+			maxRDx = Math.max(maxRDx, rdx);
+			minRDz = Math.min(minRDz, rdz);
+			maxRDz = Math.max(maxRDz, rdz);
+		}
+
+		return new int[]{minRDx, maxRDx, minRDz, maxRDz};
 	}
 
 	private static int computeSignature(BlockRadarConfig config, List<StructureTemplate> structures) {
@@ -319,11 +382,27 @@ public final class BoxRenderer {
 	}
 
 	private void renderAndDraw(LevelRenderContext context) {
+		captureViewProjMatrix(context);
+
 		if (frameBoxes.isEmpty()) return;
 
 		RenderPipeline pipeline = frameSeeThroughWalls ? FILLED_THROUGH_WALLS : RenderPipelines.DEBUG_FILLED_BOX;
 		renderBoxes(context, pipeline);
 		drawFilledThroughWalls(Minecraft.getInstance(), pipeline);
+	}
+
+	/** Stores this frame's combined view*projection matrix for waypoint HUD projection. */
+	private void captureViewProjMatrix(LevelRenderContext context) {
+		PoseStack matrices = context.poseStack();
+		Vec3 camera = context.levelState().cameraRenderState.pos;
+
+		matrices.pushPose();
+		matrices.translate(-camera.x, -camera.y, -camera.z);
+
+		frameViewProj.set(RenderSystem.getProjectionMatrix()).mul(matrices.last().pose());
+		frameViewProjValid = true;
+
+		matrices.popPose();
 	}
 
 	private void renderBoxes(LevelRenderContext context, RenderPipeline pipeline) {
@@ -460,6 +539,47 @@ public final class BoxRenderer {
 		}
 
 		builtBuffer.close();
+	}
+
+	/**
+	 * Draws a "name (Nm)" label at the projected screen position of every structure match
+	 * (plain block highlights don't get waypoints - there can be too many of those for labels
+	 * to be readable). Uses the view*projection matrix captured during the last world-render
+	 * frame to convert each structure's world-space center into a 2D screen position.
+	 */
+	private void renderWaypoints(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
+		if (!frameViewProjValid) return;
+
+		Minecraft client = Minecraft.getInstance();
+		Player player = client.player;
+		if (player == null) return;
+
+		int guiWidth = client.getWindow().getGuiScaledWidth();
+		int guiHeight = client.getWindow().getGuiScaledHeight();
+		Vec3 playerPos = player.position();
+
+		for (HighlightedBox box : frameBoxes) {
+			if (box.label() == null) continue;
+
+			Vector4f clip = new Vector4f((float) box.centerX(), (float) box.centerY(), (float) box.centerZ(), 1f);
+			frameViewProj.transform(clip);
+
+			if (clip.w() <= 0.01f) continue; // behind the camera
+
+			float ndcX = clip.x() / clip.w();
+			float ndcY = clip.y() / clip.w();
+			if (ndcX < -1f || ndcX > 1f || ndcY < -1f || ndcY > 1f) continue; // off-screen
+
+			int screenX = Math.round((ndcX * 0.5f + 0.5f) * guiWidth);
+			int screenY = Math.round((1f - (ndcY * 0.5f + 0.5f)) * guiHeight);
+
+			double distance = playerPos.distanceTo(new Vec3(box.centerX(), box.centerY(), box.centerZ()));
+			String text = box.label() + " (" + Math.round(distance) + "m)";
+
+			int textWidth = client.font.width(text);
+			int color = 0xFF000000 | ((int) (box.r() * 255) << 16) | ((int) (box.g() * 255) << 8) | (int) (box.b() * 255);
+			graphics.text(client.font, text, screenX - textWidth / 2, screenY, color, true);
+		}
 	}
 
 	/** Called from GameRendererMixin on GameRenderer#close. */
