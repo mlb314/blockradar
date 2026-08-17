@@ -391,7 +391,12 @@ public final class BoxRenderer {
 		drawFilledThroughWalls(Minecraft.getInstance(), pipeline);
 	}
 
-	/** Stores this frame's combined view*projection matrix for waypoint HUD projection. */
+	/** Stores this frame's combined view*projection matrix for waypoint HUD projection.
+	 *  RenderSystem no longer exposes a CPU-readable projection matrix as of 1.21.6+ (it moved
+	 *  to a GPU-side buffer), so the projection half is computed here directly from the current
+	 *  FOV/aspect ratio with plain perspective-projection math instead of fetching a Mojang
+	 *  matrix - this is a very close approximation (may drift slightly during effects like the
+	 *  sprint FOV boost, which isn't accounted for), which is fine for label placement. */
 	private void captureViewProjMatrix(LevelRenderContext context) {
 		PoseStack matrices = context.poseStack();
 		Vec3 camera = context.levelState().cameraRenderState.pos;
@@ -399,7 +404,12 @@ public final class BoxRenderer {
 		matrices.pushPose();
 		matrices.translate(-camera.x, -camera.y, -camera.z);
 
-		frameViewProj.set(RenderSystem.getProjectionMatrix()).mul(matrices.last().pose());
+		Minecraft client = Minecraft.getInstance();
+		float fovDegrees = client.options.fov().get();
+		float aspect = (float) client.getWindow().getWidth() / (float) client.getWindow().getHeight();
+		Matrix4f projection = new Matrix4f().perspective((float) Math.toRadians(fovDegrees), aspect, 0.05f, 4096f);
+
+		frameViewProj.set(projection).mul(matrices.last().pose());
 		frameViewProjValid = true;
 
 		matrices.popPose();
