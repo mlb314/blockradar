@@ -64,8 +64,8 @@ import com.blockradar.structure.StructureTemplate;
  * Scanning is done per 16x16 chunk column (Minecraft's native grid), cached in {@link #chunkCache}.
  * A chunk is scanned AT MOST ONCE per server once it has been successfully scanned while loaded.
  * Unloaded chunks are left out of the cache so they can be scanned later when they load.
- * New chunks are scanned in small batches (see {@link #MAX_CHUNKS_PER_RESCAN}) prioritised
- * by distance to the player, preventing client freezes on large ranges.
+ * New chunks are scanned in small batches (controlled by config.maxChunksPerRescan)
+ * prioritised by distance to the player, preventing client freezes on large ranges.
  * <p>
  * The GPU drawing part is adapted directly from the "Rendering in the World" guide for 26.1.2
  * (docs.fabricmc.net/26.1.2/develop/rendering/world) - a custom RenderPipeline based on
@@ -89,10 +89,6 @@ public final class BoxRenderer {
 	private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
 	private static final int CHUNK_SIZE = 16;
 	private static final int[] ROTATIONS = {0, 90, 180, 270};
-
-	/** Maximum number of brand-new chunks scanned in a single rescan tick.
-	 *  Keeps the client responsive even on very large ranges. */
-	private static final int MAX_CHUNKS_PER_RESCAN = 3;
 
 	private BufferBuilder buffer;
 	private MappableRingBuffer vertexBuffer;
@@ -248,9 +244,10 @@ public final class BoxRenderer {
 		// Sort missing chunks by distance to player (closest first) and only process a few
 		missing.sort((a, b) -> Long.compare(a[2], b[2]));
 
+		int maxPerTick = Math.max(1, Math.min(16, config.maxChunksPerRescan));
 		int scannedThisTick = 0;
 		for (long[] entry : missing) {
-			if (scannedThisTick >= MAX_CHUNKS_PER_RESCAN) break;
+			if (scannedThisTick >= maxPerTick) break;
 
 			int cx = (int) entry[0];
 			int cz = (int) entry[1];
