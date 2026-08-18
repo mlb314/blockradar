@@ -42,6 +42,8 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.phys.Vec3;
 
 import net.fabricmc.fabric.api.client.rendering.v1.level.LevelExtractionContext;
@@ -244,6 +246,17 @@ public final class BoxRenderer {
 		// Sort missing chunks by distance to player (closest first) and only process a few
 		missing.sort((a, b) -> Long.compare(a[2], b[2]));
 
+		// Precompute O(1) lookup maps once per rescan tick (not per block).
+		Map<String, HighlightEntry> highlightById = new HashMap<>();
+		for (HighlightEntry e : config.highlights) {
+			highlightById.put(e.blockId.toLowerCase(), e);
+		}
+		// Anchor block IDs that can start a structure match (skip structure work otherwise).
+		Set<String> structureAnchorIds = new HashSet<>();
+		for (StructureTemplate t : structures) {
+			structureAnchorIds.add(t.anchor().blockId.toLowerCase());
+		}
+
 		int maxPerTick = Math.max(1, Math.min(16, config.maxChunksPerRescan));
 		int scannedThisTick = 0;
 		for (long[] entry : missing) {
@@ -258,7 +271,7 @@ public final class BoxRenderer {
 
 			List<HighlightedBox> result = scanChunk(level, cx, cz,
 					xMin, xMax, zMin, zMax, yMin, yMax,
-					config.highlights, structures);
+					highlightById, structures, structureAnchorIds);
 
 			chunkCache.put(key, result);
 			scannedThisTick++;
@@ -276,18 +289,25 @@ public final class BoxRenderer {
 		pendingBoxes = combined;
 	}
 
+	/**
+	 * Scans one chunk column efficiently:
+	 * <ul>
+	 *   <li>Uses the actual LevelChunk + section array so empty 16×16×16 sections are skipped entirely.</li>
+	 *   <li>O(1) highlight lookup via precomputed map (no per-block list scan).</li>
+	 *   <li>Structure matching only runs when the block is a known anchor ID.</li>
+	 *   <li>Still finds every matching block inside the configured X/Y/Z box.</li>
+	 * </ul>
+	 */
 	private List<HighlightedBox> scanChunk(ClientLevel level, int chunkX, int chunkZ,
 			int xMin, int xMax, int zMin, int zMax, int yMin, int yMax,
-			List<HighlightEntry> highlights, List<StructureTemplate> structures) {
+			Map<String, HighlightEntry> highlightById, List<StructureTemplate> structures,
+			Set<String> structureAnchorIds) {
 		List<HighlightedBox> found = new ArrayList<>();
 
-		// Fast path – if the whole chunk column is not loaded, return empty immediately
 		if (!level.hasChunk(chunkX, chunkZ)) {
 			return found;
 		}
 
-		// Intersect this chunk's block range with the configured X/Z box, so partial chunks
-		// at the edge of the range don't scan blocks outside it.
 		int xStart = Math.max(chunkX * CHUNK_SIZE, xMin);
 		int xEnd = Math.min(chunkX * CHUNK_SIZE + CHUNK_SIZE - 1, xMax);
 		int zStart = Math.max(chunkZ * CHUNK_SIZE, zMin);
@@ -295,57 +315,71 @@ public final class BoxRenderer {
 
 		if (xStart > xEnd || zStart > zEnd) return found;
 
-		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
+		LevelChunk chunk = level.getChunk(chunkX, chunkZ);
 
-		for (int x = xStart; x <= xEnd; x++) {
-			for (int z = zStart; z <= zEnd; z++) {
-				for (int y = yMin; y <= yMax; y++) {
-					cursor.set(x, y, z);
+		boolean wantHighlights = !highlightById.isEmpty();
+		boolean wantStructures = !structures.isEmpty();
 
-					if (!level.isLoaded(cursor)) continue;
+		// Walk only the sections that intersect the configured Y range.
+		// 26.1 uses section-Y coordinates (getMinSectionY / getSectionIndexFromSectionY).
+		int firstSectionY = Math.max(chunk.getMinSectionY(), yMin >> 4);
+		int lastSectionY = Math.min(chunk.getMaxSectionY(), yMax >> 4);
 
-					BlockState state = level.getBlockState(cursor);
-					if (state.isAir()) continue;
+		for (int sectionY = firstSectionY; sectionY <= lastSectionY; sectionY++) {
+			LevelChunkSection section = chunk.getSection(chunk.getSectionIndexFromSectionY(sectionY));
+			if (section == null || section.hasOnlyAir()) continue;
 
-					Block block = state.getBlock();
-					String id = BuiltInRegistries.BLOCK.getKey(block).toString();
+			int sectionBaseY = sectionY << 4;
+			int ySecStart = Math.max(yMin, sectionBaseY);
+			int ySecEnd = Math.min(yMax, sectionBaseY + 15);
+			if (ySecStart > ySecEnd) continue;
 
-					for (HighlightEntry entry : highlights) {
-						if (entry.blockId.equalsIgnoreCase(id)) {
-							found.add(new HighlightedBox(x, y, z, 1, 1, 1, entry.red(), entry.green(), entry.blue(), entry.alpha(), null));
-							break;
+			// Local coordinates inside the 16×16×16 section
+			for (int y = ySecStart; y <= ySecEnd; y++) {
+				int localY = y & 15;
+				for (int z = zStart; z <= zEnd; z++) {
+					int localZ = z & 15;
+					for (int x = xStart; x <= xEnd; x++) {
+						int localX = x & 15;
+
+						BlockState state = section.getBlockState(localX, localY, localZ);
+						if (state.isAir()) continue;
+
+						String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString().toLowerCase();
+
+						if (wantHighlights) {
+							HighlightEntry entry = highlightById.get(id);
+							if (entry != null) {
+								found.add(new HighlightedBox(x, y, z, 1, 1, 1,
+										entry.red(), entry.green(), entry.blue(), entry.alpha(), null));
+							}
 						}
-					}
 
-					// Structure detection: this block is only a candidate "anchor" if it matches
-					// the FIRST block of a template - full verification only runs for that
-					// narrow subset, so this stays cheap even with several templates loaded.
-					// Every horizontal (Y-axis) rotation is tried, since a monument can be facing
-					// any of the 4 cardinal directions; block TYPE matching is direction-agnostic
-					// already (we compare block id only, not facing/state), so no per-block
-					// rotation logic beyond repositioning is needed.
-					for (StructureTemplate template : structures) {
-						RelativeBlock anchor = template.anchor();
-						if (!anchor.blockId.equalsIgnoreCase(id)) continue;
+						if (wantStructures && structureAnchorIds.contains(id)) {
+							for (StructureTemplate template : structures) {
+								RelativeBlock anchor = template.anchor();
+								if (!anchor.blockId.equalsIgnoreCase(id)) continue;
 
-						for (int rotation : ROTATIONS) {
-							int adx = rotateDx(anchor.dx, anchor.dz, rotation);
-							int adz = rotateDz(anchor.dx, anchor.dz, rotation);
-							int originX = x - adx;
-							int originY = y - anchor.dy;
-							int originZ = z - adz;
+								for (int rotation : ROTATIONS) {
+									int adx = rotateDx(anchor.dx, anchor.dz, rotation);
+									int adz = rotateDz(anchor.dx, anchor.dz, rotation);
+									int originX = x - adx;
+									int originY = y - anchor.dy;
+									int originZ = z - adz;
 
-							double percent = matchPercent(level, originX, originY, originZ, template, rotation);
-							if (percent >= template.matchThresholdPercent) {
-								int[] bounds = rotatedBounds(template, rotation);
-								found.add(new HighlightedBox(
-										originX + bounds[0], originY + template.minDy, originZ + bounds[2],
-										bounds[1] - bounds[0] + 1,
-										template.maxDy - template.minDy + 1,
-										bounds[3] - bounds[2] + 1,
-										template.red(), template.green(), template.blue(), template.alpha(),
-										template.name));
-								break; // don't test further rotations once one matches at this anchor
+									double percent = matchPercent(level, originX, originY, originZ, template, rotation);
+									if (percent >= template.matchThresholdPercent) {
+										int[] bounds = rotatedBounds(template, rotation);
+										found.add(new HighlightedBox(
+												originX + bounds[0], originY + template.minDy, originZ + bounds[2],
+												bounds[1] - bounds[0] + 1,
+												template.maxDy - template.minDy + 1,
+												bounds[3] - bounds[2] + 1,
+												template.red(), template.green(), template.blue(), template.alpha(),
+												template.name));
+										break;
+									}
+								}
 							}
 						}
 					}
