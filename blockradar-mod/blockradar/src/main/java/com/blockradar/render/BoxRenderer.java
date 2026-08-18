@@ -62,11 +62,10 @@ import com.blockradar.structure.StructureTemplate;
  * "name (distance)" waypoint label for each structure match.
  * <p>
  * Scanning is done per 16x16 chunk column (Minecraft's native grid), cached in {@link #chunkCache}.
- * A chunk is scanned AT MOST ONCE per server: once it's in the cache it is never re-scanned
- * automatically (no periodic re-checking, even at a small chance) - only genuinely new chunks
- * entering the configured range get scanned. This means the mod won't notice if a highlighted
- * block gets mined/placed in an already-scanned chunk; that trade-off is intentional, to keep
- * scanning cost as low as possible.
+ * A chunk is scanned AT MOST ONCE per server once it has been successfully scanned while loaded.
+ * Unloaded chunks are left out of the cache so they can be scanned later when they load.
+ * New chunks are scanned in small batches (see {@link #MAX_CHUNKS_PER_RESCAN}) prioritised
+ * by distance to the player, preventing client freezes on large ranges.
  * <p>
  * The GPU drawing part is adapted directly from the "Rendering in the World" guide for 26.1.2
  * (docs.fabricmc.net/26.1.2/develop/rendering/world) - a custom RenderPipeline based on
@@ -90,6 +89,10 @@ public final class BoxRenderer {
 	private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
 	private static final int CHUNK_SIZE = 16;
 	private static final int[] ROTATIONS = {0, 90, 180, 270};
+
+	/** Maximum number of brand-new chunks scanned in a single rescan tick.
+	 *  Keeps the client responsive even on very large ranges. */
+	private static final int MAX_CHUNKS_PER_RESCAN = 3;
 
 	private BufferBuilder buffer;
 	private MappableRingBuffer vertexBuffer;
@@ -169,6 +172,18 @@ public final class BoxRenderer {
 		}
 	}
 
+	/**
+	 * Clears the current server's chunk cache so every required chunk will be
+	 * re-scanned from scratch on subsequent rescan ticks.
+	 * Call this from the config screen "Reset Chunks" button.
+	 */
+	public void resetCurrentChunks() {
+		chunkCache.clear();
+		cachedSignature = 0;
+		pendingBoxes = List.of();
+		System.out.println("[blockradar] Current server chunk cache reset – will rescan.");
+	}
+
 	/** Called from a client tick handler every rescanIntervalTicks - NOT every frame. */
 	public void rescan(ClientLevel level, BlockRadarConfig config) {
 		seeThroughWalls = config.seeThroughWalls;
@@ -201,28 +216,65 @@ public final class BoxRenderer {
 		int chunkZMin = Math.floorDiv(zMin, CHUNK_SIZE);
 		int chunkZMax = Math.floorDiv(zMax, CHUNK_SIZE);
 
+		// Player position used for prioritising which chunks to scan first
+		Minecraft client = Minecraft.getInstance();
+		double playerX = client.player != null ? client.player.getX() : 0;
+		double playerZ = client.player != null ? client.player.getZ() : 0;
+
 		Set<Long> required = new HashSet<>();
-		List<HighlightedBox> combined = new ArrayList<>();
+		List<long[]> missing = new ArrayList<>();   // [chunkX, chunkZ, distSq]
 
 		for (int cx = chunkXMin; cx <= chunkXMax; cx++) {
 			for (int cz = chunkZMin; cz <= chunkZMax; cz++) {
 				long key = ChunkPos.pack(cx, cz);
 				required.add(key);
 
-				// Only ever scan a chunk the FIRST time it's seen. No periodic re-checking -
-				// once cached, a chunk is trusted until it leaves the range or the settings
-				// change (which clears the whole cache above).
 				if (!chunkCache.containsKey(key)) {
-					chunkCache.put(key, scanChunk(level, cx, cz, xMin, xMax, zMin, zMax, yMin, yMax, config.highlights, structures));
+					// Only consider it "missing" if the chunk is currently loaded.
+					// Unloaded chunks stay out of the cache so they can be scanned later.
+					if (level.hasChunk(cx, cz)) {
+						double dx = (cx * 16 + 8) - playerX;
+						double dz = (cz * 16 + 8) - playerZ;
+						missing.add(new long[]{cx, cz, (long) (dx * dx + dz * dz)});
+					}
 				}
-
-				combined.addAll(chunkCache.get(key));
 			}
 		}
 
 		// Drop cached chunks that fell out of the configured box - keeps memory bounded and
 		// means re-including an area later (by widening the range) counts as "new" again.
 		chunkCache.keySet().removeIf(key -> !required.contains(key));
+
+		// Sort missing chunks by distance to player (closest first) and only process a few
+		missing.sort((a, b) -> Long.compare(a[2], b[2]));
+
+		int scannedThisTick = 0;
+		for (long[] entry : missing) {
+			if (scannedThisTick >= MAX_CHUNKS_PER_RESCAN) break;
+
+			int cx = (int) entry[0];
+			int cz = (int) entry[1];
+			long key = ChunkPos.pack(cx, cz);
+
+			// Double-check it is still loaded (very rare race)
+			if (!level.hasChunk(cx, cz)) continue;
+
+			List<HighlightedBox> result = scanChunk(level, cx, cz,
+					xMin, xMax, zMin, zMax, yMin, yMax,
+					config.highlights, structures);
+
+			chunkCache.put(key, result);
+			scannedThisTick++;
+		}
+
+		// Rebuild the combined list from everything we currently have cached
+		List<HighlightedBox> combined = new ArrayList<>();
+		for (Long key : required) {
+			List<HighlightedBox> boxes = chunkCache.get(key);
+			if (boxes != null) {
+				combined.addAll(boxes);
+			}
+		}
 
 		pendingBoxes = combined;
 	}
@@ -231,6 +283,11 @@ public final class BoxRenderer {
 			int xMin, int xMax, int zMin, int zMax, int yMin, int yMax,
 			List<HighlightEntry> highlights, List<StructureTemplate> structures) {
 		List<HighlightedBox> found = new ArrayList<>();
+
+		// Fast path – if the whole chunk column is not loaded, return empty immediately
+		if (!level.hasChunk(chunkX, chunkZ)) {
+			return found;
+		}
 
 		// Intersect this chunk's block range with the configured X/Z box, so partial chunks
 		// at the edge of the range don't scan blocks outside it.
