@@ -98,9 +98,11 @@ public class ConfigScreen extends Screen {
 		// will be re-scanned in batches on subsequent ticks.
 		this.addRenderableWidget(Button.builder(Component.literal("Reset Chunks"), btn -> {
 			BoxRenderer.getInstance().resetCurrentChunks();
-			if (this.minecraft != null && this.minecraft.player != null) {
-				this.minecraft.player.displayClientMessage(
-						Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), true);
+			// 26.1.2: displayClientMessage was removed. Use gui.setOverlayMessage (same path
+			// the rest of the mod already uses for corner-selection feedback).
+			if (this.minecraft != null) {
+				this.minecraft.gui.setOverlayMessage(
+						Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), false);
 			}
 		}).bounds(LEFT + 410, bottom, 100, 20).build());
 	}
