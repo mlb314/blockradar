@@ -26,7 +26,7 @@ public class ConfigScreen extends Screen {
 	private final Screen parent;
 	private final BlockRadarConfig config = BlockRadar.CONFIG;
 
-	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yMinBox, yMaxBox, intervalBox;
+	private EditBox xMinBox, xMaxBox, zMinBox, zMaxBox, yMinBox, yMaxBox, intervalBox, maxChunksBox;
 	private EditBox chatTriggerBox;
 	private final List<Button> highlightRowButtons = new ArrayList<>();
 
@@ -50,6 +50,7 @@ public class ConfigScreen extends Screen {
 		yMinBox = numberField(LEFT, top, config.yMin);
 		yMaxBox = numberField(LEFT + 60, top, config.yMax);
 		intervalBox = numberField(LEFT + 140, top, config.rescanIntervalTicks);
+		maxChunksBox = numberField(LEFT + 220, top, config.maxChunksPerRescan);
 
 		top += 24;
 		this.addRenderableWidget(Checkbox.builder(Component.literal("Enabled"), this.font)
@@ -93,7 +94,7 @@ public class ConfigScreen extends Screen {
 				this.minecraft.setScreen(parent)
 		).bounds(LEFT + 320, bottom, 80, 20).build());
 
-		// New: Reset Chunks button – clears the current server's scan cache so everything
+		// Reset Chunks button – clears the current server's scan cache so everything
 		// will be re-scanned in batches on subsequent ticks.
 		this.addRenderableWidget(Button.builder(Component.literal("Reset Chunks"), btn -> {
 			BoxRenderer.getInstance().resetCurrentChunks();
@@ -120,6 +121,7 @@ public class ConfigScreen extends Screen {
 		config.yMin = parseOr(yMinBox, config.yMin);
 		config.yMax = parseOr(yMaxBox, config.yMax);
 		config.rescanIntervalTicks = Math.max(1, parseOr(intervalBox, config.rescanIntervalTicks));
+		config.maxChunksPerRescan = Math.max(1, Math.min(16, parseOr(maxChunksBox, config.maxChunksPerRescan)));
 		config.serverChangeChatTrigger = chatTriggerBox.getValue();
 	}
 
@@ -174,6 +176,7 @@ public class ConfigScreen extends Screen {
 		graphics.text(this.font, "Y min", yMinBox.getX(), yMinBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Y max", yMaxBox.getX(), yMaxBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Rescan (ticks)", intervalBox.getX(), intervalBox.getY() - 10, 0xFFAAAAAA, false);
+		graphics.text(this.font, "Chunks/tick", maxChunksBox.getX(), maxChunksBox.getY() - 10, 0xFFAAAAAA, false);
 		graphics.text(this.font, "Chat msg = 'connected to server' (blank to disable)", chatTriggerBox.getX(), chatTriggerBox.getY() - 10, 0xFFAAAAAA, false);
 
 		graphics.text(this.font, "Highlighted blocks:", LEFT, 124, 0xFFFFFFFF, false);
