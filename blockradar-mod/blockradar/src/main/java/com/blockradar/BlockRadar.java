@@ -119,10 +119,10 @@ public class BlockRadar implements ClientModInitializer {
 
 		while (resetChunksKey.consumeClick()) {
 			BoxRenderer.getInstance().resetCurrentChunks();
-			if (client.player != null) {
-				client.player.displayClientMessage(
-						Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), true);
-			}
+			// 26.1.2: displayClientMessage was removed. Use the same overlay path the rest of
+			// the mod already uses for corner-selection feedback.
+			client.gui.setOverlayMessage(
+					Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), false);
 		}
 
 		if (client.level == null) return;
