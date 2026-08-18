@@ -13,6 +13,7 @@ import net.minecraft.network.chat.Component;
 import com.blockradar.BlockRadar;
 import com.blockradar.config.BlockRadarConfig;
 import com.blockradar.config.HighlightEntry;
+import com.blockradar.render.BoxRenderer;
 
 /**
  * The "settings" menu for the mod. Bind a key to blockradar's keybinding
@@ -91,6 +92,16 @@ public class ConfigScreen extends Screen {
 		this.addRenderableWidget(Button.builder(Component.literal("Cancel"), btn ->
 				this.minecraft.setScreen(parent)
 		).bounds(LEFT + 320, bottom, 80, 20).build());
+
+		// New: Reset Chunks button – clears the current server's scan cache so everything
+		// will be re-scanned in batches on subsequent ticks.
+		this.addRenderableWidget(Button.builder(Component.literal("Reset Chunks"), btn -> {
+			BoxRenderer.getInstance().resetCurrentChunks();
+			if (this.minecraft != null && this.minecraft.player != null) {
+				this.minecraft.player.displayClientMessage(
+						Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), true);
+			}
+		}).bounds(LEFT + 410, bottom, 100, 20).build());
 	}
 
 	private EditBox numberField(int x, int y, int value) {
