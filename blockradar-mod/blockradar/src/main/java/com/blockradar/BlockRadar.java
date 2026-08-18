@@ -34,6 +34,7 @@ public class BlockRadar implements ClientModInitializer {
 	public static KeyMapping openMenuKey;
 	public static KeyMapping selectCorner1Key;
 	public static KeyMapping selectCorner2Key;
+	public static KeyMapping resetChunksKey;
 
 	// The structure-capture selection, set by looking at a block and pressing the corner keys.
 	// Read by CaptureStructureScreen when the person hits "Capture".
@@ -64,9 +65,16 @@ public class BlockRadar implements ClientModInitializer {
 				GLFW.GLFW_KEY_UNKNOWN,
 				CATEGORY
 		);
+		resetChunksKey = new KeyMapping(
+				"key.blockradar.reset_chunks",
+				InputConstants.Type.KEYSYM,
+				GLFW.GLFW_KEY_UNKNOWN, // unbound by default
+				CATEGORY
+		);
 		KeyMappingHelper.registerKeyMapping(openMenuKey);
 		KeyMappingHelper.registerKeyMapping(selectCorner1Key);
 		KeyMappingHelper.registerKeyMapping(selectCorner2Key);
+		KeyMappingHelper.registerKeyMapping(resetChunksKey);
 
 		BoxRenderer.init();
 
@@ -107,6 +115,14 @@ public class BlockRadar implements ClientModInitializer {
 			client.gui.setOverlayMessage(Component.literal(selectedCorner2 != null
 					? "Block Radar: corner 2 set to " + selectedCorner2.toShortString()
 					: "Block Radar: look at a block to set corner 2"), false);
+		}
+
+		while (resetChunksKey.consumeClick()) {
+			BoxRenderer.getInstance().resetCurrentChunks();
+			if (client.player != null) {
+				client.player.displayClientMessage(
+						Component.literal("§aBlock Radar: chunk cache reset – rescanning…"), true);
+			}
 		}
 
 		if (client.level == null) return;
