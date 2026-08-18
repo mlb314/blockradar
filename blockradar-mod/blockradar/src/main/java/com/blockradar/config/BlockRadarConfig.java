@@ -39,6 +39,10 @@ public class BlockRadarConfig {
 	// 20 ticks = 1 real second. Lower = more responsive, higher = cheaper.
 	public int rescanIntervalTicks = 10;
 
+	// Maximum number of brand-new chunks scanned in a single rescan tick.
+	// Keeps the client responsive even on very large ranges. 1-8 is the practical range.
+	public int maxChunksPerRescan = 3;
+
 	// If a received chat/system message CONTAINS this text (case-insensitive), it's treated
 	// as "you just connected to a (possibly different) server/world". The mod uses the FULL
 	// message text as a key: a never-seen key wipes the scan cache (everything is new again),
@@ -55,6 +59,9 @@ public class BlockRadarConfig {
 				BlockRadarConfig cfg = GSON.fromJson(json, BlockRadarConfig.class);
 				if (cfg != null) {
 					if (cfg.highlights == null) cfg.highlights = new ArrayList<>();
+					// Clamp to sensible values in case an old or hand-edited config has bad numbers
+					if (cfg.maxChunksPerRescan < 1) cfg.maxChunksPerRescan = 1;
+					if (cfg.maxChunksPerRescan > 16) cfg.maxChunksPerRescan = 16;
 					return cfg;
 				}
 			} catch (IOException | RuntimeException e) {
