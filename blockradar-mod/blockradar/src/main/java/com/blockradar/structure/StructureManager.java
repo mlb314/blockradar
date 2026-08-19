@@ -34,8 +34,18 @@ public final class StructureManager {
 						String json = Files.readString(path, StandardCharsets.UTF_8);
 						StructureTemplate template = GSON.fromJson(json, StructureTemplate.class);
 						if (template != null && template.blocks != null && !template.blocks.isEmpty()) {
+							String anchorBefore = template.blocks.get(0).blockId;
+							template.chooseAnchor();
 							template.computeBounds();
 							result.add(template);
+
+							// If the anchor changed (e.g. this template was captured before
+							// anchor auto-selection existed and started with a common block
+							// like stone), persist the fix so this doesn't get redone - and
+							// isn't silently lost - every single load.
+							if (!template.blocks.get(0).blockId.equals(anchorBefore)) {
+								Files.writeString(path, GSON.toJson(template), StandardCharsets.UTF_8);
+							}
 						}
 					} catch (IOException | RuntimeException e) {
 						System.err.println("[blockradar] Failed to load structure " + path + ": " + e);
@@ -55,6 +65,7 @@ public final class StructureManager {
 	}
 
 	public static void save(StructureTemplate template) {
+		template.chooseAnchor();
 		template.computeBounds();
 		try {
 			Files.createDirectories(DIR);
