@@ -91,6 +91,14 @@ public final class BoxRenderer {
 	private static final Matrix4f TEXTURE_MATRIX = new Matrix4f();
 	private static final int CHUNK_SIZE = 16;
 	private static final int[] ROTATIONS = {0, 90, 180, 270};
+	// Hard ceiling on how many structure candidate checks (anchor matches -> full comparisons)
+	// are allowed within a single rescan() call, across every chunk scanned that cycle. This is
+	// a safety net on top of rare-anchor auto-selection and matchPercent's early-exit - even if
+	// a template somehow still has a bad (common) anchor, this guarantees one rescan cycle can't
+	// balloon into a multi-second stall. Any structure checks beyond the cap are simply skipped
+	// for the rest of this cycle and retried next cycle once the queue has moved on.
+	private static final int MAX_STRUCTURE_CHECKS_PER_CYCLE = 4000;
+	private int structureChecksThisCycle;
 
 	private BufferBuilder buffer;
 	private MappableRingBuffer vertexBuffer;
@@ -185,6 +193,7 @@ public final class BoxRenderer {
 	/** Called from a client tick handler every rescanIntervalTicks - NOT every frame. */
 	public void rescan(ClientLevel level, BlockRadarConfig config) {
 		seeThroughWalls = config.seeThroughWalls;
+		structureChecksThisCycle = 0;
 
 		List<StructureTemplate> structures = StructureManager.getEnabled();
 
@@ -361,6 +370,16 @@ public final class BoxRenderer {
 								if (!anchor.blockId.equalsIgnoreCase(id)) continue;
 
 								for (int rotation : ROTATIONS) {
+									if (structureChecksThisCycle >= MAX_STRUCTURE_CHECKS_PER_CYCLE) {
+										// Hit the safety cap - stop all further structure work for
+										// the rest of this cycle. Whatever was already found this
+										// cycle is kept; anything past this point gets picked up
+										// on a later rescan cycle instead of blocking now.
+										wantStructures = false;
+										break;
+									}
+									structureChecksThisCycle++;
+
 									int adx = rotateDx(anchor.dx, anchor.dz, rotation);
 									int adz = rotateDz(anchor.dx, anchor.dz, rotation);
 									int originX = x - adx;
@@ -380,6 +399,7 @@ public final class BoxRenderer {
 										break;
 									}
 								}
+								if (!wantStructures) break;
 							}
 						}
 					}
@@ -390,22 +410,40 @@ public final class BoxRenderer {
 		return found;
 	}
 
-	/** Percentage of a template's blocks that still match, ignoring positions in unloaded chunks. */
+	/**
+	 * Percentage of a template's blocks that still match, ignoring positions in unloaded chunks.
+	 * Bails out as soon as it's mathematically impossible to still reach the threshold even if
+	 * every remaining block matched perfectly - most false-positive candidates (anchor matched
+	 * by coincidence but the rest of the shape doesn't) get rejected after only a handful of
+	 * checks instead of scanning the entire template, which matters a lot for large structures.
+	 */
 	private double matchPercent(ClientLevel level, int originX, int originY, int originZ, StructureTemplate template, int rotation) {
+		int total = template.blocks.size();
 		int attempted = 0;
 		int matched = 0;
 		BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos();
 
-		for (RelativeBlock rb : template.blocks) {
+		for (int i = 0; i < total; i++) {
+			RelativeBlock rb = template.blocks.get(i);
 			int rdx = rotateDx(rb.dx, rb.dz, rotation);
 			int rdz = rotateDz(rb.dx, rb.dz, rotation);
 			cursor.set(originX + rdx, originY + rb.dy, originZ + rdz);
-			if (!level.isLoaded(cursor)) continue;
 
-			attempted++;
-			BlockState state = level.getBlockState(cursor);
-			String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
-			if (rb.blockId.equalsIgnoreCase(id)) matched++;
+			if (level.isLoaded(cursor)) {
+				attempted++;
+				BlockState state = level.getBlockState(cursor);
+				String id = BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString();
+				if (rb.blockId.equalsIgnoreCase(id)) matched++;
+			}
+
+			int remaining = total - i - 1;
+			int denom = attempted + remaining;
+			if (denom > 0) {
+				double bestPossible = (matched + remaining) * 100.0 / denom;
+				if (bestPossible < template.matchThresholdPercent) {
+					return bestPossible; // can't reach the threshold anymore - stop early
+				}
+			}
 		}
 
 		return attempted == 0 ? 0.0 : (matched * 100.0) / attempted;
